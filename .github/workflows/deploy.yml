@@ -1,0 +1,107 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 0
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install Dependencies
+      run: |
+        npm ci
+    
+    - name: Build Hexo Site
+      run: |
+        npm run build
+    
+    - name: Create Cloudflare Pages project if not exists
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      run: |
+        # 安装必要的工具
+        sudo apt-get update && sudo apt-get install -y curl jq
+        
+        PROJECT_NAME="windsay-blog"
+        
+        # 检查项目是否存在
+        response=$(curl -s -X GET \
+          -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+          "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT_NAME" || echo "{}")
+        
+        if echo "$response" | jq -e '.success == true' > /dev/null 2>&1; then
+          echo "Project already exists"
+        else
+          echo "Creating new project..."
+          curl -s -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"name":"'"$PROJECT_NAME"'","production_branch":"main"}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects"
+          echo "Project created successfully"
+        fi
+    
+    - name: Publish to Cloudflare Pages
+      uses: cloudflare/pages-action@v1
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        projectName: windsay-blog
+        directory: public
+        gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+        branch: main
+    
+    - name: Configure Custom Domain
+      if: vars.CUSTOM_DOMAIN != ''
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
+      run: |
+        PROJECT_NAME="windsay-blog"
+        
+        echo "配置自定义域名: $CUSTOM_DOMAIN"
+        
+        # 检查域名是否已经配置
+        existing_domains=$(curl -s -X GET \
+          -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+          "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT_NAME/domains" | jq -r '.result[].name' || echo "")
+        
+        if echo "$existing_domains" | grep -q "^$CUSTOM_DOMAIN$"; then
+          echo "域名 $CUSTOM_DOMAIN 已配置，跳过"
+        else
+          # 添加自定义域名到 Cloudflare Pages
+          response=$(curl -s -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"name":"'"$CUSTOM_DOMAIN"'"}' \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT_NAME/domains")
+          
+          if echo "$response" | jq -e '.success == true' > /dev/null 2>&1; then
+            echo "✅ 域名已添加到 Cloudflare Pages"
+            echo "📝 请在 Cloudflare DNS 中添加 CNAME 记录："
+            echo "   类型: CNAME"
+            echo "   名称: $CUSTOM_DOMAIN"
+            echo "   内容: $PROJECT_NAME.pages.dev"
+          else
+            echo "⚠️ 域名配置失败，请手动在 Cloudflare 控制台配置"
+            echo "响应: $(echo "$response" | jq -r '.errors[0].message' || echo "$response")"
+          fi
+        fi

@@ -1,0 +1,3 @@
+[submodule "themes/windsay"]
+	path = themes/windsay
+	url = https://github.com/yorelll/windsay
